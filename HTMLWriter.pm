@@ -1,11 +1,11 @@
-# $Id: HTMLWriter.pm,v 1.2 2001/05/19 20:32:26 matt Exp $
+# $Id: HTMLWriter.pm,v 1.4 2001/05/21 14:13:57 matt Exp $
 
 package XML::Handler::HTMLWriter;
 
 use strict;
 use vars qw($VERSION);
 
-$VERSION = '0.01';
+$VERSION = '1.00';
 
 use vars qw/$xmlns_ns/;
 
@@ -14,11 +14,30 @@ $xmlns_ns = "http://www.w3.org/2000/xmlns/";
 sub new {
     my $class = shift;
     my %params = @_;
-    bless {}, $class;
+    
+    if (my $encoding = $params{Encoding}) {
+        eval {
+            require Text::Iconv;
+            $params{Iconv} = Text::Iconv->new("UTF-8", $params{Encoding});
+        };
+        if ($@) {
+            warn "Couldn't load Text::Iconv for alternate encoding output: $@";
+            $params{Encoding} = "UTF-8";
+        }
+    }
+    
+    bless {%params}, $class;
+}
+
+sub translate {
+    my $self = shift;
+    return @_ unless $self->{Iconv};
+    return map { $self->{Iconv}->convert($_) } @_;
 }
 
 sub print {
     my $self = shift;
+    @_ = $self->translate(@_);
     
     my $fh = $self->{Output};
     print $fh @_ if $fh;
@@ -50,9 +69,13 @@ sub escape_url {
     my $self = shift;
     my $toencode = shift;
     $toencode =~ s/&(?!\{)/&amp;/g;
-    $toencode =~ s/([^a-zA-Z0-9_.-])/uc sprintf("%%%02x",ord($1))/eg;
+    $toencode =~ s/([^a-zA-Z0-9_.&;-])/uc sprintf("%%%02x",ord($1))/eg;
     return $toencode;
 }
+
+my %html_escapes = (
+        
+        );
 
 sub output_as_xml {
     my $self = shift;
@@ -152,7 +175,7 @@ my @uri_attribs = qw(
     object/usemap
     );
 
-sub is_uri_attrib {
+sub is_url_attrib {
     my $self = shift;
     my $test = lc(shift);
     
@@ -268,9 +291,6 @@ sub start_element {
         if (lc($element->{Name}) ne 'html') {
             die "First element has to be <html>";
         }
-        else {
-            $element->{Name} = 'HTML';
-        }
         
         if ($self->{DoctypePublic}) {
             $self->print(qq(<!DOCTYPE HTML PUBLIC "$self->{DoctypePublic}"));
@@ -284,8 +304,8 @@ sub start_element {
         }
         else {
             $self->print(
-                qq(<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN"
-                      "http://www.w3.org/TR/html4/strict.dtd">\n)
+qq(<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN"
+      "http://www.w3.org/TR/html4/strict.dtd">\n)
                 );
         }
     }
@@ -311,13 +331,16 @@ sub start_element {
         
         $self->print(">");
         
-        if (lc($element->{Name}) eq 'head') {
-            # output META tag?
-            if ($self->{Encoding}) {
-                $self->print(qq(
-  <META http-equiv="Content-Type" content="text/html; charset=$self->{Encoding}">));
-            }
+        if (lc($element->{Name}) eq 'script') {
+            $self->print("<!-- // comment added by HTMLWriter\n") unless $self->{NoScriptComment};
         }
+        elsif (lc($element->{Name}) eq 'head' && lc($element->{Parent}->{Name}) eq 'html') {
+            # output META tag
+            $self->print('<META http-equiv="Content-Type" content="text/html; charset=',
+                                ($self->{Encoding} || "UTF-8"), '">',
+                        );
+        }
+        
     }
     else {
         $self->output_as_xml(start => $element);
@@ -331,14 +354,21 @@ sub end_element {
         pop @{ $self->{InScopeNamespaceStack} };
         undef $self->{Current_Is_SAX1};
     }
-
+    
+    $element = $self->{Current_Element};
+    
+    $self->{Current_Element} = $self->{Current_Element}->{Parent};
+    
     if (!$element->{NamespaceURI} && $self->is_html_tag($element->{Name})) {
         return if $self->is_empty_tag($element->{Name});
     }
     
-    $self->output_as_xml(end => $element);
+    if (!$element->{NamespaceURI} && $self->is_html_tag($element->{Name})
+        && lc($element->{Name}) eq 'script') {
+            $self->print("//-->\n") unless $self->{NoScriptComment};
+    }
     
-    $self->{Current_Element} = $self->{Current_Element}->{Parent};
+    $self->output_as_xml(end => $element);
 }
 
 sub characters {
@@ -362,7 +392,7 @@ sub characters {
 sub processing_instruction {
     my ($self, $pi) = @_;
     
-    $self->print("<?", $pi->{Target}, " ", $self->{Data}, ">");
+    $self->print("<?", $pi->{Target}, " ", $pi->{Data}, ">");
 }
 
 sub comment {
@@ -405,7 +435,10 @@ XML::Handler::HTMLWriter - SAX Handler for writing HTML 4.0
 =head1 SYNOPSIS
 
   use XML::Handler::HTMLWriter;
-  my $writer = XML::Handler::HTMLWriter->new(
+  use XML::Parser::PerlSAX;
+  my $writer = XML::Handler::HTMLWriter->new(...);
+  my $parser = XML::Parser::PerlSAX->new(Handler => $writer);
+  ...
 
 =head1 DESCRIPTION
 
@@ -414,7 +447,57 @@ http://www.w3.org/TR/xslt - the XSLT specification. It is based on
 the concepts in XML::Handler::YAWriter, and the usage is the same as
 that module.
 
-=head2 HTML Output Method
+=head1 Usage
+
+=head2 First create a new HTMLWriter object:
+
+  my $writer = XML::Handler::HTMLWriter->new(...);
+
+The ... indicates parameters to be passed in. These are all passed
+in using the hash syntax: Key => Value.
+
+Pass in parameters such as a file to write to:
+
+  AsFile => "foo.html"
+
+Or an open filehandle to write to:
+
+  Output => $fh
+
+Or pass in nothing, and use the return value of parse() (see below).
+
+=head2 Now pass $writer to a SAX chain:
+
+e.g. a SAX parser:
+
+  my $parser = XML::Parser::PerlSAX->new(Handler => $writer);
+
+Or a SAX filter:
+
+  my $tolower = XML::Filter::ToLower->new(Handler => $writer);
+
+etc.
+
+=head2 Initiate processing
+
+XML::Handler::HTMLWriter never initiates processing itself, since it is
+just a recepticle for SAX events. So you have to start processing on one
+of the modules higher up the chain. For example in the XML::Parser::PerlSAX
+case:
+
+  $parser->parse(Source => { SystemId => "foo.xhtml" });
+
+=head2 Get the results
+
+If you didn't specify an output handle, or filename, then the output will
+either propogate right up to the top of the chain and be returned from however
+you initiated the processing (e.g. the return value from $parser->parse() above),
+or you can retrieve an array reference containing all the strings to be
+concatenated together from $writer->{Strings}. If you don't want this behaviour,
+because there is an overhead for it, then pass NoString => 1 as an option to
+new().
+
+=head1 HTML Output Methodology
 
 Here is the relevant excerpt from TR/xslt [note that a bit of an
 understanding of XSLT is necessary to read this, but don't worry -
