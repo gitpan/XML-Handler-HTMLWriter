@@ -1,0 +1,5 @@
+Revision history for Perl extension XML::Handler::HTMLWriter.
+
+0.01
+    - First release. Most functionality in place, except
+      whitespace handling.
