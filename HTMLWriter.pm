@@ -1,60 +1,27 @@
-# $Id: HTMLWriter.pm,v 1.4 2001/05/21 14:13:57 matt Exp $
+# $Id: HTMLWriter.pm,v 1.5 2002/01/27 21:23:13 matt Exp $
 
 package XML::Handler::HTMLWriter;
 
 use strict;
-use vars qw($VERSION);
+use vars qw($VERSION @ISA);
 
-$VERSION = '1.00';
+$VERSION = '2.00';
 
-use vars qw/$xmlns_ns/;
-
-$xmlns_ns = "http://www.w3.org/2000/xmlns/";
+use XML::SAX::Writer ();
+use HTML::Entities ();
+@ISA = ('XML::SAX::Writer');
 
 sub new {
     my $class = shift;
-    my %params = @_;
-    
-    if (my $encoding = $params{Encoding}) {
-        eval {
-            require Text::Iconv;
-            $params{Iconv} = Text::Iconv->new("UTF-8", $params{Encoding});
-        };
-        if ($@) {
-            warn "Couldn't load Text::Iconv for alternate encoding output: $@";
-            $params{Encoding} = "UTF-8";
-        }
-    }
-    
-    bless {%params}, $class;
-}
 
-sub translate {
-    my $self = shift;
-    return @_ unless $self->{Iconv};
-    return map { $self->{Iconv}->convert($_) } @_;
+    my $opt = $class->SUPER::new(@_);
+    
+    return bless $opt, $class;
 }
 
 sub print {
     my $self = shift;
-    @_ = $self->translate(@_);
-    
-    my $fh = $self->{Output};
-    print $fh @_ if $fh;
-    push(@{$self->{Strings}}, @_) unless $self->{NoString};
-}
-
-my %xml_escapes = (
-    '&' => '&amp;',
-    '<' => '&lt;',
-    '"' => '&quot;',
-    );
-
-sub escape_xml {
-    my $self = shift;
-    my $text = shift;
-    $text =~ s/([&<"])/$xml_escapes{$1}/g;
-    return $text;
+    $self->{Consumer}->output($self->{Encoder}->convert(join('', @_)));
 }
 
 sub escape_attrib {
@@ -73,30 +40,9 @@ sub escape_url {
     return $toencode;
 }
 
-my %html_escapes = (
-        
-        );
-
-sub output_as_xml {
+sub escape_html {
     my $self = shift;
-    my %params = @_;
-    
-    if (my $element = $params{start}) {
-        $self->print("<$element->{Name}");
-
-        foreach my $attr (@{$element->{Attributes}}) {
-            $self->print(" $attr->{Name}=\"", 
-                $self->escape_xml($attr->{Value}),
-                "\"");
-        }
-
-        $self->print(">");
-
-    }
-    
-    if (my $element = $params{end}) {
-        $self->print("</$element->{Name}>");
-    }
+    return HTML::Entities::encode(join('', @_));
 }
 
 my @html_tags = qw(
@@ -217,70 +163,16 @@ sub is_boolean_attrib {
     return grep /^$test$/, @bool_attribs;
 }
 
-sub make_sax2_attribs {
-    my $self = shift;
-    my $element = shift;
-    
-    if (ref($element->{Attributes}) ne 'HASH') {
-        # already SAX2 attribs!
-        return;
-    }
-    
-    $self->{Current_Is_SAX1} = 1;
-    
-    push @{ $self->{InScopeNamespaceStack} },
-         { %{ $self->{InScopeNamespaceStack}[-1] } };
-    $self->_scan_namespaces(%{$element->{Attributes}});
-    
-    my @attribs;
-    foreach my $key (keys %{$element->{Attributes}}) {
-        my $namespace = $self->_namespace($key);
-        push @attribs, {
-                Name => $key,
-                Value => $element->{Attributes}{$key},
-                NamespaceURI => $namespace,
-                };
-    }
-    
-    $element->{Attributes} = \@attribs;
-}
-
 sub start_document {
     my ($self, $document) = @_;
     
-    $self->{InScopeNamespaceStack} = [ { '_Default' => undef,
-				         'xmlns' => $xmlns_ns } ];
-    
     undef $self->{FirstElement};
     
-    if ($self->{'AsFile'}) {
-	require IO::File;
-	$self->{'Output'} = new IO::File(">".$self->{'AsFile'});
-    }
-
-}
-
-sub end_document {
-    my $self = shift;
-    
-    if ($self->{'AsFile'}) {
-	close($self->{'Output'});
-	delete $self->{'Output'};
-    }
-    
-    if (defined(wantarray())) {
-        return join('', @{$self->{'Strings'}});
-    }
+    $self->SUPER::start_document($document);
 }
 
 sub start_element {
     my ($self, $element) = @_;
-    
-    $self->make_sax2_attribs($element);
-    
-    if (!exists $element->{NamespaceURI}) {
-        $element->{NamespaceURI} = $self->_namespace($element->{Name});
-    }
     
     $element->{Parent} = $self->{Current_Element};
     $self->{Current_Element} = $element;
@@ -288,7 +180,7 @@ sub start_element {
     if (!$self->{FirstElement}) {
         $self->{FirstElement}++;
         
-        if (lc($element->{Name}) ne 'html') {
+        if (lc($element->{Name}) ne 'html' || $element->{NamespaceURI}) {
             die "First element has to be <html>";
         }
         
@@ -314,8 +206,8 @@ qq(<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN"
         # HTML special cases...
         $self->print("<$element->{Name}");
         
-        foreach my $attr (@{$element->{Attributes}}) {
-            my $test = "$element->{Name}/$attr->{Name}";
+        foreach my $attr (values %{$element->{Attributes}}) {
+            my $test = "$element->{LocalName}/$attr->{Name}";
             if ($self->is_boolean_attrib($test)) {
                 $self->print(" $attr->{Name}");
             }
@@ -331,44 +223,37 @@ qq(<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN"
         
         $self->print(">");
         
-        if (lc($element->{Name}) eq 'script') {
+        if (lc($element->{LocalName}) eq 'script') {
             $self->print("<!-- // comment added by HTMLWriter\n") unless $self->{NoScriptComment};
         }
-        elsif (lc($element->{Name}) eq 'head' && lc($element->{Parent}->{Name}) eq 'html') {
+        elsif (lc($element->{LocalName}) eq 'head' && lc($element->{Parent}->{LocalName}) eq 'html') {
             # output META tag
-            $self->print('<META http-equiv="Content-Type" content="text/html; charset=',
-                                ($self->{Encoding} || "UTF-8"), '">',
-                        );
+            $self->print(qq(<META http-equiv="Content-Type" content="text/html; charset=$self->{EncodeTo}">));
         }
         
     }
     else {
-        $self->output_as_xml(start => $element);
+        $self->SUPER::start_element($element);
     }
 }
 
 sub end_element {
     my ($self, $element) = @_;
     
-    if ($self->{Current_Is_SAX1}) {
-        pop @{ $self->{InScopeNamespaceStack} };
-        undef $self->{Current_Is_SAX1};
-    }
+    my $el = $self->{Current_Element};
     
-    $element = $self->{Current_Element};
+    $self->{Current_Element} = $el->{Parent};
     
-    $self->{Current_Element} = $self->{Current_Element}->{Parent};
-    
-    if (!$element->{NamespaceURI} && $self->is_html_tag($element->{Name})) {
-        return if $self->is_empty_tag($element->{Name});
-    }
-    
-    if (!$element->{NamespaceURI} && $self->is_html_tag($element->{Name})
-        && lc($element->{Name}) eq 'script') {
+    if (!$el->{NamespaceURI} && $self->is_html_tag($el->{Name})) {
+        return if $self->is_empty_tag($el->{Name});
+        if (lc($el->{Name}) eq 'script') {
             $self->print("//-->\n") unless $self->{NoScriptComment};
+        }
+        $self->print("</$element->{Name}>");
     }
-    
-    $self->output_as_xml(end => $element);
+    else {
+        $self->SUPER::end_element($element);
+    }
 }
 
 sub characters {
@@ -376,53 +261,33 @@ sub characters {
     
     my $element = $self->{Current_Element};
     
-    if (!$element->{NamespaceURI} && $self->is_html_tag($element->{Name})) {
-        if (lc($element->{Name}) =~ /^(script|style)$/) {
+    if (!$element->{NamespaceURI} && $self->is_html_tag($element->{LocalName})) {
+        if (lc($element->{LocalName}) =~ /^(script|style)$/) {
             $self->print($chars->{Data});
         }
         else {
-            $self->print($self->escape_xml($chars->{Data}));
+            $self->print($self->escape_html($chars->{Data}));
         }
     }
     else {
-        $self->print($self->escape_xml($chars->{Data}));
+        $self->SUPER::characters($chars);
     }
 }
 
 sub processing_instruction {
     my ($self, $pi) = @_;
     
-    $self->print("<?", $pi->{Target}, " ", $pi->{Data}, ">");
+    if (length $pi->{Data}) {
+        $self->print("<?", $pi->{Target}, " ", $pi->{Data}, ">");
+    }
+    else {
+        $self->print("<?", $pi->{Target}, ">");
+    }
 }
 
 sub comment {
     my ($self, $comment) = @_;
-}
-
-sub _scan_namespaces {
-    my ($self, %attributes) = @_;
-
-    while (my ($attr_name, $value) = each %attributes) {
-	if ($attr_name =~ /^xmlns(:(.*))?$/) {
-            my $prefix = $2 || '_Default';
-            $self->{InScopeNamespaceStack}[-1]{$prefix} = $value;
-	}
-    }
-}
-
-sub _namespace {
-    my ($self, $name) = @_;
-
-    my ($prefix, $localname) = split(/:/, $name);
-    if (!defined($localname)) {
-	if ($prefix eq 'xmlns') {
-	    return undef;
-	} else {
-	    return $self->{InScopeNamespaceStack}[-1]{'_Default'};
-	}
-    } else {
-	return $self->{InScopeNamespaceStack}[-1]{$prefix};
-    }
+    # strip comments?
 }
 
 1;
@@ -435,17 +300,17 @@ XML::Handler::HTMLWriter - SAX Handler for writing HTML 4.0
 =head1 SYNOPSIS
 
   use XML::Handler::HTMLWriter;
-  use XML::Parser::PerlSAX;
+  use XML::SAX;
+  
   my $writer = XML::Handler::HTMLWriter->new(...);
-  my $parser = XML::Parser::PerlSAX->new(Handler => $writer);
+  my $parser = XML::SAX::ParserFactory->parser(Handler => $writer);
   ...
 
 =head1 DESCRIPTION
 
 This module is based on the rules for outputting HTML according to
-http://www.w3.org/TR/xslt - the XSLT specification. It is based on
-the concepts in XML::Handler::YAWriter, and the usage is the same as
-that module.
+http://www.w3.org/TR/xslt - the XSLT specification. It is a subclass of
+XML::SAX::Writer, and the usage is the same as that module.
 
 =head1 Usage
 
@@ -456,46 +321,41 @@ that module.
 The ... indicates parameters to be passed in. These are all passed
 in using the hash syntax: Key => Value.
 
-Pass in parameters such as a file to write to:
-
-  AsFile => "foo.html"
-
-Or an open filehandle to write to:
-
-  Output => $fh
-
-Or pass in nothing, and use the return value of parse() (see below).
+All parameters are from XML::SAX::Writer, so please see its documentation
+for more details.
 
 =head2 Now pass $writer to a SAX chain:
 
 e.g. a SAX parser:
 
-  my $parser = XML::Parser::PerlSAX->new(Handler => $writer);
+  my $parser = XML::SAX::ParserFactory->parser(Handler => $writer);
 
 Or a SAX filter:
 
   my $tolower = XML::Filter::ToLower->new(Handler => $writer);
 
-etc.
+Or use in a SAX Machine:
+
+  use XML::SAX::Machines qw(Pipeline);
+  
+  Pipeline(
+     XML::Filter::XSLT->new(Source => { SystemId => 'foo.xsl' })
+        =>
+     XML::Handler::HTMLWriter->new
+  )->parse_uri('foo.xml');
 
 =head2 Initiate processing
 
 XML::Handler::HTMLWriter never initiates processing itself, since it is
 just a recepticle for SAX events. So you have to start processing on one
-of the modules higher up the chain. For example in the XML::Parser::PerlSAX
+of the modules higher up the chain. For example in the XML::SAX parser
 case:
 
   $parser->parse(Source => { SystemId => "foo.xhtml" });
 
 =head2 Get the results
 
-If you didn't specify an output handle, or filename, then the output will
-either propogate right up to the top of the chain and be returned from however
-you initiated the processing (e.g. the return value from $parser->parse() above),
-or you can retrieve an array reference containing all the strings to be
-concatenated together from $writer->{Strings}. If you don't want this behaviour,
-because there is an overhead for it, then pass NoString => 1 as an option to
-new().
+Results work via the consumer interface as defined in XML::SAX::Writer.
 
 =head1 HTML Output Methodology
 
@@ -608,10 +468,19 @@ should output SYSTEM followed by the specified system identifier.
 The media-type attribute is applicable for the html output method. The
 default value is text/html.
 
+=head1 Entities
+
+HTML characters are output using HTML::Entities. See L<HTML::Entities>
+for more details. By default, XML::Handler::HTMLWriter uses the
+default parameters to HTML::Entities::encode(), but I would be willing
+to investigate the worth in passing more parameters in.
+
 =head1 SAX1 or SAX2?
 
-This module is designed to work with either SAX1 or SAX2. It implements
-a transparent layer to allow either SAX1 or SAX2 events to work.
+Previous versions of this module worked with both SAX1 and SAX2, but
+actually implemented the translation in quite a broken manner. So now
+this module only works with SAX 2. See http://sax.perl.org for more
+details.
 
 =head1 AUTHOR
 
@@ -619,6 +488,6 @@ Matt Sergeant, matt@sergeant.org
 
 =head1 SEE ALSO
 
-L<XML::Handler::YAWriter>, L<XML::Parser::PerlSAX>.
+L<XML::SAX::Writer>, L<XML::SAX::ParserFactory>.
 
 =cut

@@ -1,33 +1,28 @@
 use Test;
+BEGIN { plan tests => 5 }
 use XML::Handler::HTMLWriter;
-eval {
-    require XML::Parser::PerlSAX;
-    plan tests => 6;
-    ok(1);
-};
-if ($@) {
-    plan tests => 0;
-    exit();
-}
+use XML::SAX;
 
-my $writer = XML::Handler::HTMLWriter->new();
+my $output;
+my $writer = XML::Handler::HTMLWriter->new(Output => \$output);
 ok($writer);
-my $parser = XML::Parser::PerlSAX->new(Handler => $writer);
+my $parser = XML::SAX::ParserFactory->parser(Handler => $writer);
 ok($parser);
 
-my $output = $parser->parse(Source => { SystemId => "testfiles/meta_tag.xml" });
+$parser->parse(Source => { SystemId => "testfiles/meta_tag.xml" });
+
+print $output, "\n";
 
 ok($output);
 
-# warn("OUTPUT: $output\n");
-
 ok($output, qr((?i)<head><meta http-equiv));
 
-$writer = XML::Handler::HTMLWriter->new(Encoding => "ISO-8859-1");
-$parser = XML::Parser::PerlSAX->new(Handler => $writer);
+$writer = XML::Handler::HTMLWriter->new(Output => \$output, EncodeTo => "ISO-8859-1");
+$parser = XML::SAX::ParserFactory->parser(Handler => $writer);
 
-$output = $parser->parse(Source => { SystemId => "testfiles/meta_tag.xml" });
-skip($writer->{Iconv}, $output, qr/(?i)ISO-8859-1/);
+$parser->parse(Source => { SystemId => "testfiles/meta_tag.xml" });
 
-# warn("OUTPUT: Latin-1: $output\n");
+print $output, "\n";
+
+ok($output, qr/(?i)ISO-8859-1/);
 
