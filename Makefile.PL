@@ -1,4 +1,4 @@
-# $Id: Makefile.PL,v 1.3 2002/01/27 21:23:13 matt Exp $
+# $Id: Makefile.PL,v 1.4 2003/03/30 09:35:36 matt Exp $
 
 use ExtUtils::MakeMaker;
 
@@ -9,6 +9,6 @@ WriteMakefile(
     'ABSTRACT'          => 'HTML Output from XHTML SAX events',
     'PREREQ_PM'         => {
         HTML::Entities => 1.22,
-        XML::SAX::Writer => 0.39,
+        XML::SAX::Writer => 0.44,
     },
 );

@@ -1,11 +1,11 @@
-# $Id: HTMLWriter.pm,v 1.5 2002/01/27 21:23:13 matt Exp $
+# $Id: HTMLWriter.pm,v 1.7 2003/03/30 09:47:44 matt Exp $
 
 package XML::Handler::HTMLWriter;
 
 use strict;
 use vars qw($VERSION @ISA);
 
-$VERSION = '2.00';
+$VERSION = '2.01';
 
 use XML::SAX::Writer ();
 use HTML::Entities ();
@@ -13,11 +13,25 @@ use HTML::Entities ();
 
 sub new {
     my $class = shift;
+    my $opt   = (@_ == 1)  ? { %{shift()} } : {@_};
 
-    my $opt = $class->SUPER::new(@_);
+    $opt->{Writer} = 'XML::SAX::Writer::HTML';
+
+    return XML::SAX::Writer->new($opt);
+
+    my $opt = XML::SAX::Writer->new(@_);
+    
+    @ISA = (ref($opt));
     
     return bless $opt, $class;
 }
+
+package XML::SAX::Writer::HTML;
+use strict;
+use XML::SAX::Writer::XML;
+use vars qw(@ISA);
+# NB: this only works because of how hacky XML::SAX::Writer is ;-)
+@ISA = ('XML::SAX::Writer::XML');
 
 sub print {
     my $self = shift;
@@ -164,11 +178,11 @@ sub is_boolean_attrib {
 }
 
 sub start_document {
-    my ($self, $document) = @_;
+    my ($self, $doc) = @_;
     
     undef $self->{FirstElement};
     
-    $self->SUPER::start_document($document);
+    $self->SUPER::start_document($doc);
 }
 
 sub start_element {
